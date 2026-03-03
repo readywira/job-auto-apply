@@ -7,16 +7,21 @@ Benjamin's Job Search Pipeline
 - Saves results to CSV + JSON + individual cover letter files
 
 Flags:
-    0.75              -- minimum match score (default 0.70)
-    --no-pdf          -- skip PDF generation
-    --no-airtable     -- skip Airtable sync
+    0.75                        -- minimum match score (default 0.70)
+    --no-pdf                    -- skip PDF generation
+    --no-airtable               -- skip Airtable sync
     --boards linkedin,indeed,glassdoor,ziprecruiter,wellfound,all
-                      -- filter by job board (default: all)
+                                -- filter by job board (default: all)
+    --query "devops engineer"   -- search this term instead of all profile titles
+    --titles "Title1,Title2"    -- override profile job titles with custom list
+    --days 3                    -- only jobs posted in last N days (1/3/7/30)
+    --experience "3-4"          -- target experience range (added to scoring)
 
 Examples:
     python job_pipeline.py
     python job_pipeline.py 0.80 --boards linkedin,indeed
-    python job_pipeline.py --no-pdf --boards glassdoor
+    python job_pipeline.py --query "devops engineer" --days 3 --experience "3-4"
+    python job_pipeline.py --titles "Cloud Engineer,SRE" --days 7 --no-airtable
 """
 
 import json, urllib.request, urllib.parse, time, csv, os, sys
@@ -48,6 +53,30 @@ if _boards_arg.lower() != "all":
         b = b.strip()
         if b in _board_map:
             BOARD_FILTER.add(_board_map[b])
+
+# ── Dynamic search overrides ──────────────────────────────────────────────────
+def _arg_value(flag):
+    """Return the value immediately after a CLI flag, or None."""
+    try:
+        return sys.argv[sys.argv.index(flag) + 1]
+    except (ValueError, IndexError):
+        return None
+
+_query_arg  = _arg_value("--query")       # e.g. "devops engineer"
+_titles_arg = _arg_value("--titles")      # e.g. "DevOps Engineer,Cloud Engineer"
+_days_arg   = _arg_value("--days")        # e.g. "3"
+_exp_arg    = _arg_value("--experience")  # e.g. "3-4"
+
+# Map --days to JSearch date_posted values
+DATE_POSTED = "month"
+if _days_arg:
+    _d = int(_days_arg)
+    if _d <= 1:   DATE_POSTED = "today"
+    elif _d <= 3: DATE_POSTED = "3days"
+    elif _d <= 7: DATE_POSTED = "week"
+    else:         DATE_POSTED = "month"
+
+EXPERIENCE_FILTER = _exp_arg or ""  # e.g. "3-4 years"
 
 # ── Config ───────────────────────────────────────────────────────────────────
 PROFILE_PATH   = os.path.expanduser("~/job_profile.json")
@@ -85,7 +114,7 @@ def gpt(prompt, max_tokens=600):
 def jsearch(query, pages=1):
     q = urllib.parse.quote(query)
     url = (f"https://jsearch.p.rapidapi.com/search"
-           f"?query={q}&page=1&num_pages={pages}&country=us&date_posted=month")
+           f"?query={q}&page=1&num_pages={pages}&country=us&date_posted={DATE_POSTED}")
     req = urllib.request.Request(url, headers={
         "x-rapidapi-host": "jsearch.p.rapidapi.com",
         "x-rapidapi-key": RAPIDAPI_KEY
@@ -112,10 +141,12 @@ CERTS    = ", ".join(p["skills"].get("certifications", []))
 SAL_MIN  = p["preferences"]["salary_expectations"]["minimum"]
 WORK_ARR = ", ".join(p["preferences"]["work_arrangement"])
 
+_exp_line = f"\nTarget Experience Range: {EXPERIENCE_FILTER} years" if EXPERIENCE_FILTER else ""
+
 PROFILE_SUMMARY = f"""
 Name: {NAME}
 Current Title: {TITLE}
-Years of Experience: {YOE}
+Years of Experience: {YOE}{_exp_line}
 Location: {LOCATION}
 Work Preference: {WORK_ARR}
 Min Salary: ${SAL_MIN:,}/yr
@@ -130,12 +161,20 @@ Work Authorization: Authorized, no sponsorship needed
 print(f"\n{'='*60}")
 print(f"  JOB SEARCH PIPELINE — {TODAY}")
 if BOARD_FILTER:
-    print(f"  Boards: {', '.join(sorted(BOARD_FILTER))}")
+    print(f"  Boards:     {', '.join(sorted(BOARD_FILTER))}")
 else:
-    print(f"  Boards: all")
+    print(f"  Boards:     all")
+print(f"  Date range: {DATE_POSTED}")
+if EXPERIENCE_FILTER:
+    print(f"  Experience: {EXPERIENCE_FILTER} years")
 print(f"{'='*60}")
 
-job_titles    = PROFILE["search_criteria"]["job_titles"]
+if _query_arg:
+    job_titles = [_query_arg]
+elif _titles_arg:
+    job_titles = [t.strip() for t in _titles_arg.split(",") if t.strip()]
+else:
+    job_titles = PROFILE["search_criteria"]["job_titles"]
 locations     = [LOCATION, "remote"]
 seen_ids      = set()
 all_jobs      = []
@@ -185,7 +224,10 @@ for i, job in enumerate(all_jobs):
 
     print(f"  [{i+1}/{len(all_jobs)}] {title} @ {company}...", end=" ", flush=True)
 
-    score_prompt = f"""You are a job match evaluator. Score this job for the candidate below.
+    _exp_note = (f"\nIMPORTANT: Only score highly if the job requires {EXPERIENCE_FILTER} years of experience. "
+                 f"Penalise roles requiring significantly more or less experience.")  if EXPERIENCE_FILTER else ""
+
+    score_prompt = f"""You are a job match evaluator. Score this job for the candidate below.{_exp_note}
 
 CANDIDATE:
 {PROFILE_SUMMARY}

@@ -1,11 +1,126 @@
 ---
 name: job-auto-apply
-description: Automated job search and application system for Clawdbot. Use when the user wants to search for jobs and automatically apply to positions matching their criteria. Handles job searching across LinkedIn, Indeed, Glassdoor, ZipRecruiter, and Wellfound, generates tailored cover letters, fills application forms, and tracks application status. Use when user says things like "find and apply to jobs", "auto-apply for [job title]", "search for [position] jobs and apply", or "help me apply to multiple jobs automatically".
+description: >
+  Automated job search and application pipeline for Benjamin. Use when the user says anything like:
+  "run a fresh job search", "find new jobs", "search for jobs", "run the job pipeline",
+  "find and apply to jobs", "auto-apply for [job title]", "search for [position] jobs and apply",
+  "help me apply to multiple jobs", "run job search", "start job search", "check for new jobs",
+  "search for devops jobs posted in the last 3 days", "find IT support roles requiring 3-4 years
+  experience", or any job search with specific criteria like title, experience, recency.
+  Also use when the user sends a job posting URL — fetch it and generate a tailored resume
+  and cover letter for that specific job.
 ---
 
 # Job Auto-Apply Skill
 
 Automate job searching and application submission across multiple job platforms using Clawdbot.
+
+## ⚡ Agent Invocation (WhatsApp / Telegram)
+
+### Handling a Job Posting URL
+
+**If the user's message contains a URL (starts with http)**, this is a URL-tailor request.
+
+⚠️ **IMPORTANT**: Do NOT use your built-in `web_fetch` tool to fetch the URL yourself.
+You MUST execute the bash command below. The script handles fetching internally.
+
+Run via bash exec:
+```
+/home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/tailor_from_url.py "URL_HERE"
+```
+
+**After running, relay the NOTIFICATION block from the output.**
+Look for the section between `NOTIFICATION` and the final `===`. Send only that — do NOT paste the full cover letter.
+
+Example reply to user:
+> ✅ Tailored for: DevOps Engineer at Acme Corp
+> Email subject: DevOps Engineer — Benjamin Mbugua
+> Review & download PDFs: https://airtable.com/appXXX/tblXXX/recXXX
+
+**If the script output says "Fetch failed" or the page was blocked:**
+Reply: "I couldn't fetch that page directly (the site blocks bots). Please paste the job description text and I'll tailor everything from that."
+
+Example trigger messages:
+- "https://www.linkedin.com/jobs/view/..."
+- "https://www.dice.com/job-detail/..."
+- "tailor my resume for this: https://..."
+- "write a cover letter for this job: https://..."
+
+---
+
+### Running a Job Search
+
+**When the user asks to search for jobs** (with or without specific criteria), translate their
+natural language into CLI flags and run:
+
+```bash
+/home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/job_pipeline.py [FLAGS]
+```
+
+**Natural language → CLI flags:**
+
+| User says | CLI flag to add |
+|---|---|
+| "devops jobs" / "search for devops" | `--query "devops engineer"` |
+| "IT support roles" | `--query "IT support specialist"` |
+| "cloud engineer positions" | `--query "cloud engineer"` |
+| "posted in last 3 days" / "recent jobs" | `--days 3` |
+| "posted today" | `--days 1` |
+| "posted this week" | `--days 7` |
+| "3-4 years experience" | `--experience "3-4"` |
+| "mid-level" | `--experience "3-5"` |
+| "senior" | `--experience "5-8"` |
+| "LinkedIn only" | `--boards linkedin` |
+| "Indeed and LinkedIn" | `--boards linkedin,indeed` |
+| "strict matching" / "best matches only" | `0.80` (score threshold) |
+
+**Examples:**
+
+```bash
+# "search for devops jobs posted in last 3 days requiring 3-4 years experience"
+... job_pipeline.py --query "devops engineer" --days 3 --experience "3-4"
+
+# "find cloud engineer jobs on LinkedIn posted this week"
+... job_pipeline.py --query "cloud engineer" --days 7 --boards linkedin
+
+# "run a fresh search with strict matching"
+... job_pipeline.py 0.80
+
+# Default full search (all profile job titles, last month)
+... job_pipeline.py
+```
+
+**Optional flags:**
+```bash
+--no-airtable    # Skip Airtable sync (faster)
+--no-pdf         # Skip PDF generation (fastest)
+--boards X,Y     # Limit to specific job boards
+```
+
+**After running, report back:**
+- Total jobs found and scored
+- Number of good matches (above threshold)
+- Top 5 matches: score · title · company · salary
+- Any errors
+
+---
+
+**IT Support focused search** (finds verified LinkedIn Easy Apply jobs):
+```bash
+/home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/it_support_ea_search.py
+```
+
+**LinkedIn Easy Apply submission** (applies to Airtable "Ready to Apply" jobs):
+```bash
+xvfb-run -a /home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/linkedin_apply.py
+```
+> Note: `linkedin_apply.py` requires `xvfb-run` since it launches a browser. Only LinkedIn URLs will be processed; others are skipped automatically.
+
+**Profile and output paths:**
+- Profile: `/home/benji/job_profile.json`
+- Output: `/home/benji/job_applications/`
+- Cover letters: `/home/benji/job_applications/YYYY-MM-DD_cover_letters/`
+- PDFs: `/home/benji/job_applications/YYYY-MM-DD/pdfs/`
 
 ## Overview
 
@@ -35,27 +150,17 @@ cp profile_template.json ~/job_profile.json
 ### 2. Run Job Search and Apply
 
 ```bash
-# Basic usage - search and apply (dry run)
-python job_search_apply.py \
-  --title "Software Engineer" \
-  --location "San Francisco, CA" \
-  --remote \
-  --max-applications 10 \
-  --dry-run
+# Standard full pipeline (search → score → cover letters → PDFs → Airtable)
+/home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/job_pipeline.py
 
-# With profile file
-python job_search_apply.py \
-  --profile ~/job_profile.json \
-  --title "Backend Engineer" \
-  --platforms linkedin,indeed \
-  --auto-apply
+# Fast mode — skip PDFs and Airtable
+/home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/job_pipeline.py --no-pdf --no-airtable
 
-# Production mode (actual applications)
-python job_search_apply.py \
-  --profile ~/job_profile.json \
-  --title "Senior Developer" \
-  --no-dry-run \
-  --require-confirmation
+# Stricter matching (80% threshold)
+/home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/job_pipeline.py 0.80
+
+# LinkedIn Easy Apply (requires Airtable "Ready to Apply" jobs + xvfb)
+xvfb-run -a /home/benji/job_venv/bin/python3 /home/benji/.openclaw/workspace/skills/job-auto-apply/linkedin_apply.py
 ```
 
 ## Workflow Steps
@@ -208,7 +313,12 @@ Results are automatically saved in JSON format with details on each application 
 ## Bundled Resources
 
 ### Scripts
-- `job_search_apply.py` - Main automation script with search, matching, and application logic
+- `job_pipeline.py` - **Main pipeline**: search → score → cover letters → PDFs → Airtable sync
+- `it_support_ea_search.py` - IT support focused search with LinkedIn Easy Apply verification
+- `linkedin_apply.py` - LinkedIn Easy Apply automation (reads from Airtable "Ready to Apply")
+- `airtable_sync.py` - Standalone Airtable sync utility
+- `pdf_generator.py` - Resume + cover letter PDF generation
+- `ai_tailoring.py` - AI-powered resume tailoring per job description
 
 ### References
 - `platform_integration.md` - Technical documentation for API integration, web scraping, form automation, and platform-specific details

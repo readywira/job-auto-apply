@@ -100,20 +100,11 @@ def login(page, email, password):
 
 
 def save_session(context):
-    cookies = context.cookies()
+    """Save full browser storage state (cookies + localStorage + sessionStorage)."""
+    storage = context.storage_state()
     with open(SESSION_FILE, "w") as f:
-        json.dump(cookies, f, indent=2)
+        json.dump(storage, f, indent=2)
     print(f"  ✓ Session saved to {SESSION_FILE}")
-
-
-def load_session(context):
-    if os.path.exists(SESSION_FILE):
-        with open(SESSION_FILE) as f:
-            cookies = json.load(f)
-        context.add_cookies(cookies)
-        print(f"  ✓ Loaded existing session from {SESSION_FILE}")
-        return True
-    return False
 
 
 # ── Easy Apply form handling ─────────────────────────────────────────────────
@@ -127,14 +118,32 @@ def fill_easy_apply(page, profile, dry_run=False):
     phone = per["phone"]
     email = per["email"]
 
-    # Click "Easy Apply" button
+    # Click "Easy Apply" button — try multiple selectors
+    EASY_APPLY_SELECTOR = (
+        'button:has-text("Easy Apply"), '
+        'button[aria-label*="Easy Apply"], '
+        '.jobs-apply-button--top-card button, '
+        '.jobs-s-apply button'
+    )
     try:
-        easy_btn = page.locator('button:has-text("Easy Apply")').first
-        easy_btn.wait_for(timeout=8000)
+        easy_btn = page.locator(EASY_APPLY_SELECTOR).first
+        easy_btn.wait_for(timeout=12000)
+        easy_btn.scroll_into_view_if_needed()
+        time.sleep(0.5)
         easy_btn.click()
-        time.sleep(2)
+        time.sleep(2.5)
     except PWTimeout:
-        print("    ⚠ No Easy Apply button found — skipping")
+        # Debug: dump ALL button texts (visible or not) to diagnose
+        btns = page.locator("button")
+        all_btns = []
+        for i in range(min(btns.count(), 40)):
+            try:
+                t = (btns.nth(i).inner_text() or "").strip()[:50]
+                if t:
+                    all_btns.append(t)
+            except Exception:
+                pass
+        print(f"    ⚠ No Easy Apply button. All buttons: {all_btns}")
         return False
 
     step = 0
@@ -411,7 +420,9 @@ def main():
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False, slow_mo=50)
-        context = browser.new_context(
+
+        # storage_state must be passed at context creation time to restore localStorage
+        ctx_kwargs = dict(
             viewport={"width": 1280, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -419,12 +430,14 @@ def main():
                 "Chrome/121.0.0.0 Safari/537.36"
             )
         )
+        if os.path.exists(SESSION_FILE):
+            ctx_kwargs["storage_state"] = SESSION_FILE
+            print(f"  ✓ Loaded session from {SESSION_FILE}")
 
-        # Restore session if available
-        load_session(context)
+        context = browser.new_context(**ctx_kwargs)
         page = context.new_page()
 
-        # Login
+        # Login (will reuse session if valid, otherwise log in fresh)
         logged_in = login(page, li_email, li_password)
         if not logged_in:
             print("  ERROR: Could not log in to LinkedIn. Aborting.")
@@ -453,10 +466,15 @@ def main():
                 skipped += 1
                 continue
 
-            # Navigate to job
+            # Navigate to job — strip UTM params, wait for full render
             try:
-                page.goto(apply_url, wait_until="domcontentloaded", timeout=20000)
-                time.sleep(2)
+                clean_url = apply_url.split("?")[0]
+                page.goto(clean_url, wait_until="domcontentloaded", timeout=30000)
+                # Wait for LinkedIn React content to finish rendering
+                time.sleep(5)
+                # Scroll to top to ensure apply button in sticky header is visible
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(1)
             except Exception as e:
                 print(f"    ⚠ Navigation failed: {e}")
                 failed += 1

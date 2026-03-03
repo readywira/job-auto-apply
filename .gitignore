@@ -30,3 +30,9 @@ application_results.json
 .idea/
 *.swp
 *.swo
+
+# OpenClaw internal skill metadata
+.clawhub/
+
+# Airtable state cache
+.airtable_state.json
