@@ -277,26 +277,76 @@ def batch_create_records(key, base_id, jobs, existing_urls):
     return created
 
 
-# ── Store PDF paths in Notes (Airtable REST API cannot upload local files) ───
+# ── Upload PDFs to Google Drive then attach URLs to Airtable record ──────────
 def upload_pdfs(key, base_id, table_id, created_pairs):
     """
-    Airtable's REST API requires a public URL for attachments — local files
-    cannot be uploaded directly. Instead, we write the Windows-accessible
-    paths into the Notes field so PDFs are easy to locate.
+    For each (job, record_id) pair:
+      1. Upload resume + cover PDF to Google Drive (public links).
+      2. Patch the Airtable "Resume PDF" and "Cover Letter PDF" attachment
+         fields with the Drive download URLs.
+      3. Write the Drive folder link + local paths to the Notes field.
+
+    Falls back to Notes-only (local paths) if Drive upload fails.
     """
+    # Try to import Drive uploader once
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        from drive_uploader import upload_pdfs_for_job
+        _drive_available = True
+    except Exception as _e:
+        print(f"  ⚠ Drive uploader not available ({_e}) — storing local paths only")
+        _drive_available = False
+
+    def _to_win(p):
+        return p.replace("/home/benji/", "C:\\Users\\admin\\").replace("/", "\\") if p else ""
+
     for job, record_id in created_pairs:
         resume_path = job.get("resume_pdf", "")
         cover_path  = job.get("cover_pdf",  "")
+        company     = job.get("company",    "")
+        job_title   = job.get("title",      "")
+
         if not resume_path and not cover_path:
             continue
 
-        # Convert WSL path → Windows path for display
-        def to_win(p):
-            return p.replace("/home/benji/", "C:\\Users\\admin\\").replace("/", "\\") if p else ""
+        record_url = f"{AT_BASE_URL}/{base_id}/{urllib.parse.quote(TABLE_NAME)}/{record_id}"
+        fields_update = {}
 
-        pdf_note = f"📄 Resume PDF: {to_win(resume_path)}\n📄 Cover PDF:  {to_win(cover_path)}"
-        url      = f"{AT_BASE_URL}/{base_id}/{urllib.parse.quote(TABLE_NAME)}/{record_id}"
-        at_patch(url, {"fields": {"Notes": pdf_note}}, key)
+        if _drive_available:
+            try:
+                result = upload_pdfs_for_job(
+                    company, job_title, resume_path, cover_path
+                )
+                if result["resume_url"]:
+                    fields_update["Resume PDF"] = [{
+                        "url":      result["resume_url"],
+                        "filename": os.path.basename(resume_path),
+                    }]
+                if result["cover_url"]:
+                    fields_update["Cover Letter PDF"] = [{
+                        "url":      result["cover_url"],
+                        "filename": os.path.basename(cover_path),
+                    }]
+                notes_line = f"📁 Drive: {result['folder_url']}"
+                if resume_path:
+                    notes_line += f"\n📄 Resume: {_to_win(resume_path)}"
+                if cover_path:
+                    notes_line += f"\n📄 Cover:  {_to_win(cover_path)}"
+                fields_update["Notes"] = notes_line
+                print(f"  ✓ Drive upload: {company[:35]} — {job_title[:25]}")
+            except Exception as e:
+                print(f"  ⚠ Drive upload failed ({e}) — storing local paths")
+                _drive_available = False  # don't retry for subsequent records
+
+        if not fields_update:
+            # Fallback: write local paths to Notes only
+            notes_line = ""
+            if resume_path: notes_line += f"📄 Resume PDF: {_to_win(resume_path)}\n"
+            if cover_path:  notes_line += f"📄 Cover PDF:  {_to_win(cover_path)}"
+            fields_update["Notes"] = notes_line.strip()
+
+        at_patch(record_url, {"fields": fields_update}, key)
         time.sleep(0.22)
 
 

@@ -217,6 +217,62 @@ def drive_url(file_id):
     return f"https://drive.google.com/uc?export=download&id={file_id}"
 
 
+# ── Reusable helper for pipeline / tailor_from_url ────────────────────────────
+def upload_pdfs_for_job(company, job_title, resume_path, cover_path, date=None):
+    """
+    Upload a resume + cover letter PDF pair for a single job to Google Drive.
+    Creates the folder structure Job Applications/{date}/pdfs/ if needed.
+    Makes each file publicly accessible.
+
+    Args:
+        company     – employer name (used for Drive filename slug)
+        job_title   – job title (used for Drive filename slug)
+        resume_path – local path to resume PDF (may be empty string)
+        cover_path  – local path to cover letter PDF (may be empty string)
+        date        – YYYY-MM-DD string; defaults to today
+
+    Returns:
+        dict with keys:
+          resume_url  – public Drive download URL (or "" if not uploaded)
+          cover_url   – public Drive download URL (or "" if not uploaded)
+          folder_url  – Drive folder browse URL
+    """
+    if not resume_path and not cover_path:
+        return {"resume_url": "", "cover_url": "", "folder_url": ""}
+
+    date = date or datetime.now().strftime("%Y-%m-%d")
+
+    service  = get_drive_service()
+    root_id  = get_or_create_folder(service, "Job Applications")
+    date_id  = get_or_create_folder(service, date,    parent_id=root_id)
+    pdfs_id  = get_or_create_folder(service, "pdfs",  parent_id=date_id)
+    make_public(service, pdfs_id)
+
+    def _safe(s):
+        return re.sub(r"[^\w\-]", "_", s).strip("_")[:50]
+
+    co_slug = _safe(company)
+    ti_slug = _safe(job_title)
+
+    resume_url = ""
+    cover_url  = ""
+
+    if resume_path and os.path.exists(resume_path):
+        fname      = os.path.basename(resume_path)
+        fid        = upload_file(service, resume_path, fname, pdfs_id)
+        make_public(service, fid)
+        resume_url = drive_url(fid)
+
+    if cover_path and os.path.exists(cover_path):
+        fname     = os.path.basename(cover_path)
+        fid       = upload_file(service, cover_path, fname, pdfs_id)
+        make_public(service, fid)
+        cover_url = drive_url(fid)
+
+    folder_url = f"https://drive.google.com/drive/folders/{pdfs_id}"
+    return {"resume_url": resume_url, "cover_url": cover_url, "folder_url": folder_url}
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     date = TODAY
