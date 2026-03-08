@@ -463,7 +463,7 @@ if not SKIP_AIRTABLE:
         # Normalize entries for airtable_sync
         at_jobs = []
         for entry in scored_jobs:
-                _score = entry.get("score", 0)
+            _score = entry.get("score", 0)
             at_jobs.append({
                 "title":         entry.get("title", ""),
                 "company":       entry.get("company", ""),
