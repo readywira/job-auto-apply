@@ -261,7 +261,8 @@ def batch_create_records(key, base_id, jobs, existing_urls):
                     "Skill Gaps":    job.get("skill_gaps", ""),
                     "Apply URL":     job.get("apply_url", ""),
                     "Cover Letter":  job.get("cover_letter", ""),
-                    "Status":        "Pending Review",
+                    # Use tiered status if provided (85%+ = Ready to Apply), else default
+                    "Status":        job.get("status", "Pending Review"),
                 }
             })
 

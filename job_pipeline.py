@@ -48,6 +48,7 @@ if _boards_arg.lower() != "all":
         "glassdoor":    "glassdoor",
         "ziprecruiter": "ziprecruiter",
         "wellfound":    "wellfound",
+        "dice":         "dice",
     }
     for b in _boards_arg.lower().split(","):
         b = b.strip()
@@ -88,7 +89,16 @@ OPENAI_KEY     = _auth["openai:default"]["key"]
 RAPIDAPI_KEY   = _auth["rapidapi:default"]["key"]
 PROFILE        = json.load(open(PROFILE_PATH))
 
-MIN_SCORE      = float(next((a for a in sys.argv[1:] if a.replace('.','',1).isdigit()), "0.70"))
+# Exclude values that belong to named flags (e.g. '3' in --days 3 must not be score)
+_flag_val_indices = set()
+for _kf in ("--boards", "--query", "--titles", "--days", "--experience"):
+    if _kf in sys.argv:
+        _flag_val_indices.add(sys.argv.index(_kf) + 1)
+MIN_SCORE      = float(next(
+    (a for i, a in enumerate(sys.argv[1:], 1)
+     if i not in _flag_val_indices and a.replace('.','',1).isdigit()),
+    "0.70"
+))
 MAX_PER_TITLE  = 10   # JSearch results per job title query
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -453,10 +463,11 @@ if not SKIP_AIRTABLE:
         # Normalize entries for airtable_sync
         at_jobs = []
         for entry in scored_jobs:
+                _score = entry.get("score", 0)
             at_jobs.append({
                 "title":         entry.get("title", ""),
                 "company":       entry.get("company", ""),
-                "score":         entry.get("score", 0),
+                "score":         _score,
                 "location":      entry.get("location", ""),
                 "salary":        entry.get("salary", ""),
                 "platform":      entry.get("platform", ""),
@@ -466,6 +477,8 @@ if not SKIP_AIRTABLE:
                 "cover_letter":  entry.get("cover_letter", ""),
                 "resume_pdf":    entry.get("resume_pdf", ""),
                 "cover_pdf":     entry.get("cover_pdf", ""),
+                # Tiered status: 85%+ → Ready to Apply (auto), 70–84% → Pending Review
+                "status": "Ready to Apply" if _score >= 0.85 else "Pending Review",
             })
 
         at_key, at_base_id, at_table_id = at_load_auth()
