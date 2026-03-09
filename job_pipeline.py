@@ -84,10 +84,11 @@ PROFILE_PATH   = os.path.expanduser("~/job_profile.json")
 AUTH_FILE      = os.path.expanduser("~/.openclaw/agents/main/agent/auth-profiles.json")
 OUTPUT_DIR     = os.path.expanduser("~/job_applications")
 
-_auth          = json.load(open(AUTH_FILE))["profiles"]
-OPENAI_KEY     = _auth["openai:default"]["key"]
-RAPIDAPI_KEY   = _auth["rapidapi:default"]["key"]
-PROFILE        = json.load(open(PROFILE_PATH))
+_auth           = json.load(open(AUTH_FILE))["profiles"]
+OPENAI_KEY      = _auth["openai:default"]["key"]
+DEEPSEEK_KEY    = _auth.get("deepseek:default", {}).get("key", "")
+RAPIDAPI_KEY    = _auth["rapidapi:default"]["key"]
+PROFILE         = json.load(open(PROFILE_PATH))
 
 # Exclude values that belong to named flags (e.g. '3' in --days 3 must not be score)
 _flag_val_indices = set()
@@ -107,19 +108,29 @@ COVER_DIR      = os.path.join(OUTPUT_DIR, f"{TODAY}_cover_letters")
 os.makedirs(COVER_DIR, exist_ok=True)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-def gpt(prompt, max_tokens=600):
-    data = json.dumps({
-        "model": "gpt-4o-mini",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens
-    }).encode()
+def _chat(url, key, model, prompt, max_tokens, extra_body=None):
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": max_tokens}
+    if extra_body:
+        payload.update(extra_body)
     req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions", data=data,
-        headers={"Authorization": f"Bearer {OPENAI_KEY}",
-                 "Content-Type": "application/json"}
+        url, data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     )
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read())["choices"][0]["message"]["content"].strip()
+
+
+def gpt(prompt, max_tokens=600):
+    """Call GPT-4o-mini; fall back to DeepSeek-chat on quota/rate-limit errors."""
+    try:
+        return _chat("https://api.openai.com/v1/chat/completions",
+                     OPENAI_KEY, "gpt-4o-mini", prompt, max_tokens)
+    except urllib.error.HTTPError as e:
+        if e.code in (429, 500, 503) and DEEPSEEK_KEY:
+            return _chat("https://api.deepseek.com/v1/chat/completions",
+                         DEEPSEEK_KEY, "deepseek-chat", prompt, max_tokens)
+        raise
 
 def jsearch(query, pages=1):
     q = urllib.parse.quote(query)

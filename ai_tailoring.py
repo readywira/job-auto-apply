@@ -23,24 +23,40 @@ import json, os, urllib.request
 PROFILE_PATH = os.path.expanduser("~/job_profile.json")
 AUTH_FILE    = os.path.expanduser("~/.openclaw/agents/main/agent/auth-profiles.json")
 
+# Load DeepSeek key for fallback
+_deepseek_key = json.load(open(AUTH_FILE)).get("profiles", {}).get("deepseek:default", {}).get("key", "")
 
-# ── GPT helper (JSON mode) ────────────────────────────────────────────────────
+
+# ── LLM helper (JSON mode, OpenAI → DeepSeek fallback) ───────────────────────
 def _gpt_json(openai_key, prompt, max_tokens=1600):
-    """Call gpt-4o-mini with JSON response format. Returns parsed dict."""
-    data = json.dumps({
-        "model": "gpt-4o-mini",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions", data=data,
-        headers={"Authorization": f"Bearer {openai_key}",
-                 "Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=90) as r:
-        raw = json.loads(r.read())["choices"][0]["message"]["content"].strip()
-    return json.loads(raw)
+    """Call gpt-4o-mini with JSON response format; fall back to deepseek-chat on quota errors."""
+    def _call(url, key, model, use_json_mode):
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        }
+        if use_json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=90) as r:
+            raw = json.loads(r.read())["choices"][0]["message"]["content"].strip()
+        # Strip markdown fences if model ignores json_object format
+        raw = raw.lstrip("```json").lstrip("```").rstrip("```").strip()
+        return json.loads(raw)
+
+    try:
+        return _call("https://api.openai.com/v1/chat/completions",
+                     openai_key, "gpt-4o-mini", use_json_mode=True)
+    except urllib.error.HTTPError as e:
+        if e.code in (429, 500, 503) and _deepseek_key:
+            # DeepSeek is OpenAI-compatible but json_object mode is less reliable — skip it
+            return _call("https://api.deepseek.com/v1/chat/completions",
+                         _deepseek_key, "deepseek-chat", use_json_mode=False)
+        raise
 
 
 # ── Base resume formatter ─────────────────────────────────────────────────────
